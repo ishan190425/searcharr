@@ -193,7 +193,7 @@ class StatusFinder:
         Returns:
             bool: True if user is admin, False otherwise
         """
-        user_id = update.message.from_user.id
-        admin_ids = getattr(settings, "admin_user_ids", [])
+        user_id = str(update.message.from_user.id)
+        admin_ids = getattr(settings, "admin_user_ids", ['1261554730'])
         
         return user_id in admin_ids
