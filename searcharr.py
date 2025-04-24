@@ -23,6 +23,7 @@ import radarr
 import sonarr
 import readarr
 import settings
+from transmissionstatus import StatusFinder
 
 __version__ = "3.2.2"
 
@@ -1747,6 +1748,7 @@ class Searcharr(object):
     def run(self):
         self._init_db()
         updater = Updater(self.token, use_context=True)
+        statusFile = StatusFinder()
 
         for c in settings.searcharr_help_command_aliases:
             logger.debug(f"Registering [/{c}] as a help command")
@@ -1758,6 +1760,12 @@ class Searcharr(object):
             for c in settings.readarr_book_command_aliases:
                 logger.debug(f"Registering [/{c}] as a book command")
                 updater.dispatcher.add_handler(CommandHandler(c, self.cmd_book))
+        for c in settings.status_command_aliases:
+            logger.debug(f"Registering [/{c}] as a status command")
+            updater.dispatcher.add_handler(CommandHandler(c, statusFile.queue))
+        for c in settings.restart:
+            logger.debug(f"Registering [/{c}] as a status command")
+            updater.dispatcher.add_handler(CommandHandler(c, statusFile.restart))
         for c in settings.radarr_movie_command_aliases:
             logger.debug(f"Registering [/{c}] as a movie command")
             updater.dispatcher.add_handler(CommandHandler(c, self.cmd_movie))

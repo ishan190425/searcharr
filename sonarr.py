@@ -16,6 +16,7 @@ class Sonarr(object):
     def __init__(self, api_url, api_key, verbose=False):
         self.logger = set_up_logger("searcharr.sonarr", verbose, False)
         self.logger.debug("Logging started!")
+        print(api_url)
         if api_url[-1] == "/":
             api_url = api_url[:-1]
         if api_url[:4] != "http":
