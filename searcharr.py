@@ -14,6 +14,8 @@ from urllib.parse import parse_qsl
 import uuid
 from datetime import datetime
 
+import time
+
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
 from telegram.error import BadRequest
 from telegram.ext import Updater, CommandHandler, CallbackQueryHandler
@@ -1748,7 +1750,46 @@ class Searcharr(object):
     def run(self):
         self._init_db()
         updater = Updater(self.token, use_context=True)
+        self.updater = updater  # Store updater for later use
         statusFile = StatusFinder()
+        self.statusFile = statusFile  # Store StatusFinder for later use
+
+        # Set up Docker container management settings if not already defined
+        if not hasattr(settings, "docker_container_management_enabled"):
+            settings.docker_container_management_enabled = True
+            logger.warning(
+                "No docker_container_management_enabled setting found. Please add docker_container_management_enabled to settings.py. Defaulting to True."
+            )
+        
+        if not hasattr(settings, "docker_container_name"):
+            settings.docker_container_name = "protonvpn"
+            logger.warning(
+                "No docker_container_name setting found. Please add docker_container_name to settings.py. Defaulting to 'protonvpn'."
+            )
+        
+        if not hasattr(settings, "docker_container_restart_command"):
+            settings.docker_container_restart_command = "cd ~/Docker/protonvpn && docker compose up -d"
+            logger.warning(
+                "No docker_container_restart_command setting found. Please add docker_container_restart_command to settings.py. Defaulting to 'cd ~/Docker/protonvpn && docker compose up -d'."
+            )
+        
+        if not hasattr(settings, "docker_status_check_interval"):
+            settings.docker_status_check_interval = 300  # 5 minutes
+            logger.warning(
+                "No docker_status_check_interval setting found. Please add docker_status_check_interval to settings.py. Defaulting to 300 seconds (5 minutes)."
+            )
+        
+        if not hasattr(settings, "docker_restart_command_aliases"):
+            settings.docker_restart_command_aliases = ["restart_vpn"]
+            logger.warning(
+                "No docker_restart_command_aliases setting found. Please add docker_restart_command_aliases to settings.py. Defaulting to ['restart_vpn']."
+            )
+        
+        if not hasattr(settings, "admin_user_ids"):
+            settings.admin_user_ids = []
+            logger.warning(
+                "No admin_user_ids setting found. Please add admin_user_ids to settings.py with a list of Telegram user IDs for admins. Container status notifications will not be sent."
+            )
 
         for c in settings.searcharr_help_command_aliases:
             logger.debug(f"Registering [/{c}] as a help command")
@@ -1763,9 +1804,19 @@ class Searcharr(object):
         for c in settings.status_command_aliases:
             logger.debug(f"Registering [/{c}] as a status command")
             updater.dispatcher.add_handler(CommandHandler(c, statusFile.queue))
-        for c in settings.restart:
-            logger.debug(f"Registering [/{c}] as a status command")
-            updater.dispatcher.add_handler(CommandHandler(c, statusFile.restart))
+        
+        # Register Docker container restart commands
+        if hasattr(settings, "restart"):
+            for c in settings.restart:
+                logger.debug(f"Registering [/{c}] as a container restart command")
+                updater.dispatcher.add_handler(CommandHandler(c, statusFile.restart))
+        
+        if hasattr(settings, "docker_restart_command_aliases"):
+            for c in settings.docker_restart_command_aliases:
+                if c not in getattr(settings, "restart", []):
+                    logger.debug(f"Registering [/{c}] as a container restart command")
+                    updater.dispatcher.add_handler(CommandHandler(c, statusFile.restart))
+        
         for c in settings.radarr_movie_command_aliases:
             logger.debug(f"Registering [/{c}] as a movie command")
             updater.dispatcher.add_handler(CommandHandler(c, self.cmd_movie))
@@ -1783,8 +1834,34 @@ class Searcharr(object):
                 "Developer mode is enabled; skipping registration of error handler--exceptions will be raised."
             )
 
+        # Start polling in a separate thread
         updater.start_polling()
-        updater.idle()
+        
+        # Check container status periodically
+        if settings.docker_container_management_enabled:
+            logger.info("Docker container management is enabled. Will check container status periodically.")
+            try:
+                # Initial status check
+                is_running = statusFile.check_container_status()
+                logger.info(f"Initial container status check: {'running' if is_running else 'stopped'}")
+                
+                # Periodically check status while bot is running
+                while True:
+                    try:
+                        statusFile.notify_if_container_down(updater.bot)
+                        time.sleep(10)  # Sleep for 10 seconds between checks
+                    except KeyboardInterrupt:
+                        break
+                    except Exception as e:
+                        logger.error(f"Error in container status check loop: {e}")
+                        time.sleep(30)  # Sleep longer on error
+            except KeyboardInterrupt:
+                logger.info("Received keyboard interrupt. Stopping bot...")
+            finally:
+                updater.stop()
+        else:
+            # If Docker container management is disabled, just wait for the bot to be stopped
+            updater.idle()
 
     def _create_conversation(self, id, username, kind, results):
         con, cur = self._get_con_cur()

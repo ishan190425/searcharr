@@ -54,6 +54,32 @@ Send the bot a (private or group) message saying `/series <title>`, `/movie <tit
 
 If you are authenticated as an admin, you can use the `/users` command to retrieve a list of users with buttons to remove all access and add/remove admin access (as applicable).
 
+### Docker Container Management
+
+Searcharr includes functionality to monitor and manage Docker containers. This is particularly useful for monitoring VPN containers that may occasionally stop.
+
+#### Features:
+- Periodically checks if a specified Docker container is running
+- Notifies admin users when the container stops
+- Provides a command to restart the container
+
+#### Configuration:
+Configure Docker container management in `settings.py`:
+
+```python
+# Docker Container Management
+docker_container_management_enabled = True  # Enable Docker container management
+docker_container_name = "protonvpn"  # Name of the Docker container to monitor
+docker_container_restart_command = "cd ~/Docker/protonvpn && docker compose up -d"  # Command to restart the container
+docker_status_check_interval = 300  # Check container status every 5 minutes (in seconds)
+docker_restart_command_aliases = ["restart_vpn"]  # Command aliases for the restart command
+admin_user_ids = [123456789]  # Telegram user IDs of admins to notify when container is down
+```
+
+#### Usage:
+- When the monitored container stops, admin users will receive a notification via Telegram
+- Use the configured restart command (e.g., `/restart_vpn`) to restart the container
+
 ## Screenshots
 
 Authenticate by saying `/start <password>` (or `/start@bot_username <password>` in a group with multiple bots)
