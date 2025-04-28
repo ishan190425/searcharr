@@ -66,3 +66,7 @@ no_matching_books: Sorry, but I didn't find any matching books.
 help_readarr: Use {book_commands} to add a book to Readarr.
 no_metadata_profiles: "Error adding {kind}: no metadata profiles enabled for {app}! Please check your Searcharr configuration and try again."
 add_metadata_button: "Add Metadata: {metadata}"
+search_now_button: "🔍 Search Now"
+search_triggered: "{kind} search triggered! Check your download client for progress."
+search_failed: "Failed to trigger {kind} search. Please check logs."
+search_not_supported: "Search is not supported for this content type."

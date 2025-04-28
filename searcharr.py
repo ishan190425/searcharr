@@ -1434,6 +1434,22 @@ class Searcharr(object):
                 query.message.reply_text(
                     self._xlate("unknown_error_removing_admin", user=i)
                 )
+        elif op == "search":
+            r = convo["results"][i]
+            if convo["type"] == "series" and r["id"]:
+                result = self.sonarr.search_series(r["id"])
+                if result:
+                    query.message.reply_text(self._xlate("search_triggered", kind=self._xlate("series").title()))
+                else:
+                    query.message.reply_text(self._xlate("search_failed", kind=self._xlate("series").title()))
+            elif convo["type"] == "movie" and r["id"]:
+                result = self.radarr.search_movie(r["id"])
+                if result:
+                    query.message.reply_text(self._xlate("search_triggered", kind=self._xlate("movie").title()))
+                else:
+                    query.message.reply_text(self._xlate("search_failed", kind=self._xlate("movie").title()))
+            else:
+                query.message.reply_text(self._xlate("search_not_supported"))
 
         query.answer()
 
@@ -1567,6 +1583,14 @@ class Searcharr(object):
                         callback_data=f"{cid}^^^{i}^^^noop",
                     ),
                 )
+                # Add "Search Now" button for content that's already added
+                if kind in ["series", "movie"]:
+                    keyboardActRow.append(
+                        InlineKeyboardButton(
+                            self._xlate("search_now_button"),
+                            callback_data=f"{cid}^^^{i}^^^search",
+                        ),
+                    )
         keyboardActRow.append(
             InlineKeyboardButton(
                 self._xlate("cancel_search_button"),

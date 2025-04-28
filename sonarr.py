@@ -290,3 +290,12 @@ class Sonarr(object):
             return None
         else:
             return r.json()
+            
+    def search_series(self, series_id):
+        """Trigger a search for an existing series by its ID."""
+        params = {
+            "name": "SeriesSearch",
+            "seriesIds": [series_id]
+        }
+        self.logger.debug(f"Triggering search for series ID: {series_id}")
+        return self._api_post("command", params)

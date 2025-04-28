@@ -243,3 +243,12 @@ class Radarr(object):
             return None
         else:
             return r.json()
+            
+    def search_movie(self, movie_id):
+        """Trigger a search for an existing movie by its ID."""
+        params = {
+            "name": "MovieSearch",
+            "movieIds": [movie_id]
+        }
+        self.logger.debug(f"Triggering search for movie ID: {movie_id}")
+        return self._api_post("command", params)
