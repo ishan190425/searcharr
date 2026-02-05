@@ -543,10 +543,6 @@ class Searcharr(object):
                 )
             )
             return
-        # Check rate limit
-        if not self._check_rate_limit(update.message.from_user.id):
-            update.message.reply_text("⚠️ Rate limit exceeded. Please wait a moment before searching again.")
-            return
         if not settings.radarr_enabled:
             update.message.reply_text(self._xlate("radarr_disabled"))
             return
@@ -617,10 +613,6 @@ class Searcharr(object):
                     ),
                 )
             )
-            return
-        # Check rate limit
-        if not self._check_rate_limit(update.message.from_user.id):
-            update.message.reply_text("⚠️ Rate limit exceeded. Please wait a moment before searching again.")
             return
         if not settings.sonarr_enabled:
             update.message.reply_text(self._xlate("sonarr_disabled"))
@@ -1795,10 +1787,8 @@ class Searcharr(object):
                 resp += f"• Use {restart_cmds} to restart the VPN container\n"
         
         # Tips
-        resp += "\n💡 *Tips:*\n"
-        resp += "• Already added content shows a 🔍 *Search Now* button to re-trigger downloads\n"
-        rate_limit = getattr(settings, "rate_limit_requests", 20)
-        resp += f"• Rate limit: {rate_limit} requests per minute"
+        resp += "\n💡 Tips:\n"
+        resp += "• Already added content shows a 🔍 Search Now button to re-trigger downloads"
 
         update.message.reply_text(resp, parse_mode="Markdown")
 
