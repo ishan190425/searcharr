@@ -1833,14 +1833,14 @@ class Searcharr(object):
             update.message.reply_text("📋 You haven't made any requests yet!")
             return
         
-        resp = "📋 *Your Recent Requests:*\n\n"
+        resp = "📋 Your Recent Requests:\n\n"
         for req in requests:
             req_type, title, status, created_at = req
             emoji = "🎬" if req_type == "movie" else "📺" if req_type == "series" else "📚"
             status_emoji = "✅" if status == "added" else "⏳" if status == "pending" else "❌"
             resp += f"{emoji} {title}\n   {status_emoji} {status} • {created_at[:16]}\n\n"
         
-        update.message.reply_text(resp, parse_mode="Markdown")
+        update.message.reply_text(resp)
 
     def _check_rate_limit(self, user_id):
         """Check if user has exceeded rate limit. Returns True if allowed, False if limited."""
