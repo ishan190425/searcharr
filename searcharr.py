@@ -1759,25 +1759,48 @@ class Searcharr(object):
             or settings.radarr_enabled
             or settings.readarr_enabled
         ):
-            resp = ""
+            resp = "📺 *Searcharr Bot* — Your Media Request Assistant\n\n"
+            resp += "*📥 Add Content:*\n"
             if settings.sonarr_enabled:
-                resp += f" {sonarr_help}"
+                resp += f"• {sonarr_help}\n"
             if settings.radarr_enabled:
-                resp += f" {radarr_help}"
+                resp += f"• {radarr_help}\n"
             if settings.readarr_enabled:
-                resp += f" {readarr_help}"
+                resp += f"• {readarr_help}\n"
+            
+            # Status command
+            resp += "\n*📊 Check Progress:*\n"
+            status_cmds = " OR ".join([f"`/{c} Title`" for c in settings.status_command_aliases])
+            resp += f"• Use {status_cmds} to check download status\n"
+            
+            # Request history
+            myrequests_aliases = getattr(settings, "myrequests_command_aliases", ["myrequests"])
+            myrequests_cmds = " OR ".join([f"`/{c}`" for c in myrequests_aliases])
+            resp += f"• Use {myrequests_cmds} to view your recent requests\n"
         else:
             resp = self._xlate("no_features")
 
         if auth_level == 2:
-            resp += " " + self._xlate(
+            resp += "\n*🔧 Admin Commands:*\n"
+            resp += "• " + self._xlate(
                 "admin_help",
                 commands=" OR ".join(
-                    [f"/{c}" for c in settings.searcharr_users_command_aliases]
+                    [f"`/{c}`" for c in settings.searcharr_users_command_aliases]
                 ),
-            )
+            ) + "\n"
+            # Restart command
+            restart_aliases = getattr(settings, "restart", []) + getattr(settings, "docker_restart_command_aliases", [])
+            if restart_aliases:
+                restart_cmds = " OR ".join([f"`/{c}`" for c in restart_aliases[:2]])
+                resp += f"• Use {restart_cmds} to restart the VPN container\n"
+        
+        # Tips
+        resp += "\n💡 *Tips:*\n"
+        resp += "• Already added content shows a 🔍 *Search Now* button to re-trigger downloads\n"
+        rate_limit = getattr(settings, "rate_limit_requests", 20)
+        resp += f"• Rate limit: {rate_limit} requests per minute"
 
-        update.message.reply_text(resp)
+        update.message.reply_text(resp, parse_mode="Markdown")
 
     def cmd_myrequests(self, update, context):
         """Show user's request history."""

@@ -70,3 +70,12 @@ search_now_button: "🔍 Search Now"
 search_triggered: "{kind} search triggered! Check your download client for progress."
 search_failed: "Failed to trigger {kind} search. Please check logs."
 search_not_supported: "Search is not supported for this content type."
+
+# Extended help
+help_status: "Use {status_commands} to check download progress for a title."
+help_myrequests: "Use {myrequests_commands} to view your recent requests."
+help_restart: "Use {restart_commands} to restart the VPN container (admin only)."
+help_header: "📺 *Searcharr Bot* - Your Media Request Assistant\n\n"
+help_footer: "\n\n💡 *Tips:*\n• Already added content shows a 🔍 Search Now button to re-trigger downloads\n• Rate limit: {rate_limit} requests per minute"
+no_requests: "📋 You haven't made any requests yet!"
+rate_limit_exceeded: "⚠️ Rate limit exceeded. Please wait a moment before searching again."
