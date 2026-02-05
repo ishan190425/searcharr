@@ -176,10 +176,11 @@ class StatusFinder:
             # Send notification to each admin
             for admin_id in admin_ids:
                 try:
+                    container_name = getattr(settings, 'docker_container_name', 'protonvpn')
+                    restart_cmd = getattr(settings, 'docker_restart_command_aliases', ['restart_vpn'])[0]
                     bot.send_message(
                         chat_id=admin_id,
-                        text=f"⚠️ Container {getattr(settings, 'docker_container_name', 'protonvpn')} is down! Use /{getattr(settings, 'docker_restart_command_aliases', ['restart_vpn'])[0]} to restart it.",
-                        parse_mode="Markdown"
+                        text=f"⚠️ Container {container_name} is down! Use /{restart_cmd} to restart it."
                     )
                 except Exception as e:
                     self.logger.error(f"Failed to send notification to admin {admin_id}: {e}")

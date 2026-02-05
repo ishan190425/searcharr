@@ -543,6 +543,10 @@ class Searcharr(object):
                 )
             )
             return
+        # Check rate limit
+        if not self._check_rate_limit(update.message.from_user.id):
+            update.message.reply_text("⚠️ Rate limit exceeded. Please wait a moment before searching again.")
+            return
         if not settings.radarr_enabled:
             update.message.reply_text(self._xlate("radarr_disabled"))
             return
@@ -613,6 +617,10 @@ class Searcharr(object):
                     ),
                 )
             )
+            return
+        # Check rate limit
+        if not self._check_rate_limit(update.message.from_user.id):
+            update.message.reply_text("⚠️ Rate limit exceeded. Please wait a moment before searching again.")
             return
         if not settings.sonarr_enabled:
             update.message.reply_text(self._xlate("sonarr_disabled"))
@@ -1290,6 +1298,16 @@ class Searcharr(object):
                 self._delete_conversation(cid)
                 query.message.reply_text(self._xlate("added", title=r["title"]))
                 query.message.delete()
+                # Log the request to history
+                self._log_request(
+                    user_id=query.from_user.id,
+                    username=query.from_user.username,
+                    request_type=convo["type"],
+                    title=r["title"],
+                    tmdb_id=r.get("tmdbId"),
+                    tvdb_id=r.get("tvdbId"),
+                    status="added"
+                )
             else:
                 query.message.reply_text(
                     self._xlate("unknown_error_adding", kind=convo["type"])
@@ -1761,6 +1779,125 @@ class Searcharr(object):
 
         update.message.reply_text(resp)
 
+    def cmd_myrequests(self, update, context):
+        """Show user's request history."""
+        logger.debug(f"Received myrequests cmd from [{update.message.from_user.username}]")
+        auth_level = self._authenticated(update.message.from_user.id)
+        if not auth_level:
+            update.message.reply_text(
+                self._xlate(
+                    "auth_required",
+                    commands=" OR ".join(
+                        [
+                            f"`/{c} <{self._xlate('password')}>`"
+                            for c in settings.searcharr_start_command_aliases
+                        ]
+                    ),
+                )
+            )
+            return
+        
+        con, cur = self._get_con_cur()
+        try:
+            with DBLOCK:
+                cur.execute(
+                    """SELECT request_type, title, status, created_at 
+                       FROM request_history 
+                       WHERE user_id = ? 
+                       ORDER BY created_at DESC 
+                       LIMIT 10""",
+                    (update.message.from_user.id,)
+                )
+                requests = cur.fetchall()
+        except sqlite3.Error as e:
+            logger.error(f"Error fetching request history: {e}")
+            update.message.reply_text("Error fetching request history.")
+            return
+        finally:
+            con.close()
+        
+        if not requests:
+            update.message.reply_text("📋 You haven't made any requests yet!")
+            return
+        
+        resp = "📋 *Your Recent Requests:*\n\n"
+        for req in requests:
+            req_type, title, status, created_at = req
+            emoji = "🎬" if req_type == "movie" else "📺" if req_type == "series" else "📚"
+            status_emoji = "✅" if status == "added" else "⏳" if status == "pending" else "❌"
+            resp += f"{emoji} {title}\n   {status_emoji} {status} • {created_at[:16]}\n\n"
+        
+        update.message.reply_text(resp, parse_mode="Markdown")
+
+    def _check_rate_limit(self, user_id):
+        """Check if user has exceeded rate limit. Returns True if allowed, False if limited."""
+        max_requests = getattr(settings, "rate_limit_requests", 20)  # Default 20 requests
+        window_seconds = getattr(settings, "rate_limit_window", 60)  # Default 1 minute
+        
+        con, cur = self._get_con_cur()
+        try:
+            with DBLOCK:
+                cur.execute(
+                    "SELECT request_count, window_start FROM rate_limits WHERE user_id = ?",
+                    (user_id,)
+                )
+                row = cur.fetchone()
+                
+                current_time = datetime.now()
+                
+                if row:
+                    count, window_start = row
+                    window_start = datetime.fromisoformat(window_start) if isinstance(window_start, str) else window_start
+                    
+                    # Check if window has expired
+                    if (current_time - window_start).total_seconds() > window_seconds:
+                        # Reset window
+                        cur.execute(
+                            "UPDATE rate_limits SET request_count = 1, window_start = ? WHERE user_id = ?",
+                            (current_time.isoformat(), user_id)
+                        )
+                        con.commit()
+                        return True
+                    elif count >= max_requests:
+                        return False
+                    else:
+                        cur.execute(
+                            "UPDATE rate_limits SET request_count = request_count + 1 WHERE user_id = ?",
+                            (user_id,)
+                        )
+                        con.commit()
+                        return True
+                else:
+                    # New user, create entry
+                    cur.execute(
+                        "INSERT INTO rate_limits (user_id, request_count, window_start) VALUES (?, 1, ?)",
+                        (user_id, current_time.isoformat())
+                    )
+                    con.commit()
+                    return True
+        except sqlite3.Error as e:
+            logger.error(f"Error checking rate limit: {e}")
+            return True  # Allow on error
+        finally:
+            con.close()
+
+    def _log_request(self, user_id, username, request_type, title, tmdb_id=None, tvdb_id=None, status="pending"):
+        """Log a request to history."""
+        con, cur = self._get_con_cur()
+        try:
+            with DBLOCK:
+                cur.execute(
+                    """INSERT INTO request_history 
+                       (user_id, username, request_type, title, tmdb_id, tvdb_id, status) 
+                       VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                    (user_id, username, request_type, title, tmdb_id, tvdb_id, status)
+                )
+                con.commit()
+        except sqlite3.Error as e:
+            logger.error(f"Error logging request: {e}")
+        finally:
+            con.close()
+
     def _strip_entities(self, message):
         text = message.text
         entities = message.parse_entities()
@@ -1850,6 +1987,13 @@ class Searcharr(object):
         for c in settings.searcharr_users_command_aliases:
             logger.debug(f"Registering [/{c}] as a users command")
             updater.dispatcher.add_handler(CommandHandler(c, self.cmd_users))
+        
+        # Register /myrequests command
+        myrequests_aliases = getattr(settings, "myrequests_command_aliases", ["myrequests", "requests", "history"])
+        for c in myrequests_aliases:
+            logger.debug(f"Registering [/{c}] as a myrequests command")
+            updater.dispatcher.add_handler(CommandHandler(c, self.cmd_myrequests))
+        
         updater.dispatcher.add_handler(CallbackQueryHandler(self.callback))
         if not self.DEV_MODE:
             updater.dispatcher.add_error_handler(self.handle_error)
@@ -2169,6 +2313,22 @@ class Searcharr(object):
                 key text,
                 value text,
                 primary key (cid, key)
+            );""",
+            """CREATE TABLE IF NOT EXISTS request_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                username TEXT,
+                request_type TEXT NOT NULL,
+                title TEXT NOT NULL,
+                tmdb_id TEXT,
+                tvdb_id TEXT,
+                status TEXT DEFAULT 'pending',
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );""",
+            """CREATE TABLE IF NOT EXISTS rate_limits (
+                user_id INTEGER PRIMARY KEY,
+                request_count INTEGER DEFAULT 0,
+                window_start TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );""",
         ]
         for q in queries:
