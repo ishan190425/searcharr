@@ -1835,10 +1835,19 @@ class Searcharr(object):
         
         resp = "📋 Your Recent Requests:\n\n"
         for req in requests:
-            req_type, title, status, created_at = req
+            # req is a tuple: (request_type, title, status, created_at)
+            if len(req) >= 4:
+                req_type = str(req[0])
+                title = str(req[1])
+                status = str(req[2])
+                created_at = str(req[3])[:16] if req[3] else "unknown"
+            else:
+                update.message.reply_text(f"Debug: Bad row format: {req}")
+                return
+            
             emoji = "🎬" if req_type == "movie" else "📺" if req_type == "series" else "📚"
             status_emoji = "✅" if status == "added" else "⏳" if status == "pending" else "❌"
-            resp += f"{emoji} {title}\n   {status_emoji} {status} • {created_at[:16]}\n\n"
+            resp += f"{emoji} {title}\n   {status_emoji} {status} - {created_at}\n\n"
         
         update.message.reply_text(resp)
 
