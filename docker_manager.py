@@ -2,6 +2,7 @@
 Searcharr
 Docker Container Management Module
 """
+import shlex
 import subprocess
 import time
 import os
@@ -65,8 +66,7 @@ class DockerManager:
         try:
             # Execute the restart command
             process = subprocess.run(
-                self.restart_command,
-                shell=True,
+                shlex.split(self.restart_command),
                 capture_output=True,
                 text=True,
                 check=False

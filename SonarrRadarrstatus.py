@@ -1,5 +1,5 @@
-from telegram import Update, Bot
-from telegram.ext import Updater, CommandHandler, CallbackContext
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 import requests
 import settings
 # Replace with your actual tokens and URLs
@@ -9,16 +9,15 @@ RADARR_API_KEY = settings.radarr_api_key
 SONARR_URL = settings.sonarr_url
 RADARR_URL = settings.radarr_url
 
-def statusMovie(update: Update, context: CallbackContext) -> None:
-    #sonarr_downloads = get_sonarr_downloads()
+async def statusMovie(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     radarr_downloads = get_radarr_downloads()
     message = format_status_message(radarr_downloads)
-    update.message.reply_text(message, parse_mode='HTML')
+    await update.message.reply_text(message, parse_mode='HTML')
 
-def statusShow(update: Update, context: CallbackContext) -> None:
+async def statusShow(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     sonarr_downloads = get_sonarr_downloads()
     message = format_status_message(sonarr_downloads)
-    update.message.reply_text(message, parse_mode='HTML')
+    await update.message.reply_text(message, parse_mode='HTML')
 
 def get_sonarr_downloads():
     url = f'{SONARR_URL}/api/v3/queue?'
@@ -47,14 +46,12 @@ def format_status_message(radarr_downloads) -> str:
 
 
 def main() -> None:
-    updater = Updater(TELEGRAM_TOKEN)
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-    dispatcher = updater.dispatcher
-    dispatcher.add_handler(CommandHandler("statusMovie", statusMovie))
-    dispatcher.add_handler(CommandHandler("statusShows", statusShow))
+    application.add_handler(CommandHandler("statusMovie", statusMovie))
+    application.add_handler(CommandHandler("statusShows", statusShow))
 
-    updater.start_polling()
-    updater.idle()
+    application.run_polling()
 
 if __name__ == '__main__':
     main()

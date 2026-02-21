@@ -1,5 +1,5 @@
-argparse
-requests
-python-telegram-bot==13.15
-pyyaml
-arrow
+requests>=2.28.0,<3.0
+python-telegram-bot>=20.0,<22.0
+pyyaml>=6.0,<7.0
+arrow>=1.2.0,<2.0
+transmission-rpc>=3.0.0,<5.0
