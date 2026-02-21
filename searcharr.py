@@ -1837,10 +1837,10 @@ class Searcharr(object):
         lines = ["📋 Your Recent Requests:", ""]
         for req in requests:
             try:
-                req_type = req[0] if req[0] else "unknown"
-                title = req[1] if req[1] else "Unknown Title"
-                status = req[2] if req[2] else "pending"
-                created_at = str(req[3])[:16] if len(req) > 3 and req[3] else ""
+                req_type = req.get("request_type") or "unknown"
+                title = req.get("title") or "Unknown Title"
+                status = req.get("status") or "pending"
+                created_at = str(req.get("created_at", ""))[:16]
                 
                 if req_type == "movie":
                     emoji = "🎬"
@@ -1882,7 +1882,7 @@ class Searcharr(object):
                 current_time = datetime.now()
                 
                 if row:
-                    count, window_start = row
+                    count, window_start = row["request_count"], row["window_start"]
                     window_start = datetime.fromisoformat(window_start) if isinstance(window_start, str) else window_start
                     
                     # Check if window has expired
