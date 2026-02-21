@@ -1698,7 +1698,7 @@ class Searcharr(object):
     async def handle_error(self, update, context):
         logger.error(f"Caught error: {context.error}")
         try:
-            update.callback_await query.answer()
+            await update.callback_query.answer()
         except Exception as e:
             logger.debug(f"Could not answer callback query in error handler: {e}")
 
