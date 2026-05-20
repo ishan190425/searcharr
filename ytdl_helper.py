@@ -116,8 +116,21 @@ def find_media_matches(title: str, threshold: float = 0.50, max_results: int = 5
     return [(kind, path) for score, kind, path in matches[:max_results]]
 
 
+_COOKIES_FILE = Path("/home/rflix/youtube_cookies.txt")
+_COOKIES_OPTS: dict = (
+    {"cookiefile": str(_COOKIES_FILE)} if _COOKIES_FILE.exists()
+    else {"cookiesfrombrowser": ("firefox",)}
+)
+# Node.js + remote EJS scripts to solve YouTube's n-challenge
+_JS_OPTS: dict = {
+    "no_js_runtimes": True,
+    "js_runtimes": {"node": {}},
+    "remote_components": ["ejs:github"],
+}
+
+
 def search_youtube(query: str, max_results: int = 10) -> list:
-    opts = {"quiet": True, "no_warnings": True, "extract_flat": True}
+    opts = {"quiet": True, "no_warnings": True, "extract_flat": True, **_COOKIES_OPTS}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(f"ytsearch{max_results}:{query}", download=False)
     return info.get("entries", [])
@@ -145,14 +158,18 @@ def download(url: str, audio_only: bool, output_dir: Path, folder_name: str = ""
                 "quiet": quiet,
                 "restrictfilenames": True,
                 "postprocessors": [{"key": "FFmpegExtractAudio", "preferredcodec": "mp3", "preferredquality": "192"}],
+                **_COOKIES_OPTS,
+                **_JS_OPTS,
             }
         else:
             opts = {
-                "format": "bv*+ba/b",  # More flexible: best video + best audio, fallback to best single
+                "format": "bv*+ba/b",
                 "outtmpl": template,
                 "merge_output_format": "mkv",
                 "quiet": quiet,
                 "restrictfilenames": True,
+                **_COOKIES_OPTS,
+                **_JS_OPTS,
             }
 
         with yt_dlp.YoutubeDL(opts) as ydl:
@@ -176,7 +193,7 @@ def download(url: str, audio_only: bool, output_dir: Path, folder_name: str = ""
 
 
 def get_video_title(url: str) -> str:
-    opts = {"quiet": True, "no_warnings": True, "skip_download": True}
+    opts = {"quiet": True, "no_warnings": True, "skip_download": True, **_COOKIES_OPTS}
     with yt_dlp.YoutubeDL(opts) as ydl:
         info = ydl.extract_info(url, download=False)
     return info.get("title", "")
