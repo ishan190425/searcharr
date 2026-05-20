@@ -2249,7 +2249,7 @@ class Searcharr(object):
                 if result is None:
                     if score != -1.0:  # -1.0 = network error, don't count as miss
                         consecutive_misses += 1
-                        if consecutive_misses >= 3:
+                        if consecutive_misses >= 8:
                             break
                     continue
                 consecutive_misses = 0
@@ -2291,7 +2291,7 @@ class Searcharr(object):
                     if result is None:
                         if score != -1.0:
                             consecutive_misses += 1
-                            if consecutive_misses >= 3:
+                            if consecutive_misses >= 8:
                                 break
                         continue
                     consecutive_misses = 0

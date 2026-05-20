@@ -182,15 +182,30 @@ def get_video_title(url: str) -> str:
     return info.get("title", "")
 
 
-_EP_NUMBER_RE = re.compile(r'\bep(?:isode)?\.?\s*(\d+)\b', re.IGNORECASE)
+# "Ep N" / "Episode N"
+_EP_NUMBER_RE = re.compile(r'\bep(?:isode)?\.?\s*(\d{1,4})\b', re.IGNORECASE)
+# Standalone number after separator: "| 9", "# 9", ": 9", "- 09", "– 09"
+_EP_SEP_RE = re.compile(r'[|#:\-–]\s*(\d{1,3})\b')
 
 
 def _ep_number_score(title: str, ep: int) -> float:
-    """Return 0.4 bonus if the title contains 'Ep N' or 'Episode N' matching ep."""
+    """Return bonus if the title contains an episode number matching ep.
+
+    0.4 for explicit 'Ep N'/'Episode N', 0.25 for number-after-separator
+    (e.g. '| 9' or '- 09') — lower confidence since those can be part numbers.
+    """
     for m in _EP_NUMBER_RE.finditer(title):
         if int(m.group(1)) == ep:
             return 0.4
+    for m in _EP_SEP_RE.finditer(title):
+        if int(m.group(1)) == ep:
+            return 0.25
     return 0.0
+
+
+def _search_show_name(show_name: str) -> str:
+    """Strip trailing punctuation from a show name before using in a search query."""
+    return re.sub(r'[!?.]+$', '', clean_title(show_name)).strip()
 
 
 def search_best_episode(show_name: str, season: int, ep: int, min_score: float = 0.30):
@@ -199,10 +214,12 @@ def search_best_episode(show_name: str, season: int, ep: int, min_score: float =
     Returns (result_dict, score) on match, (None, 0.0) for no match,
     (None, -1.0) on search error (caller should not count this as a miss).
     """
+    search_name = _search_show_name(show_name)
     queries = [
-        f"{show_name} Ep {ep} Full Episode",
-        f"{show_name} Episode {ep}",
-        f"{show_name} season {season} episode {ep}",
+        f"{search_name} Ep {ep} Full Episode",
+        f"{search_name} Episode {ep}",
+        f"{search_name} {ep} full episode",
+        f"{search_name} season {season} episode {ep}",
     ]
     clean_show = clean_title(show_name)
     best_score, best_result = 0.0, None
