@@ -80,6 +80,13 @@ rate_limit_window = 60  # Window in seconds (1 minute)
 # Request History
 myrequests_command_aliases = ["myrequests", "requests", "history"]
 
+# YouTube Download
+ytdl_command_aliases = ["youtube", "yt"]
+ytdl_search_results = 8  # results to show per search
+
+# YouTube Auto-fill (auto-download all episodes of a show)
+ytfill_command_aliases = ["ytfill"]
+
 # Docker Container Management
 docker_container_management_enabled = True
 docker_container_name = "TransmissionVPN"

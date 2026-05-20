@@ -298,3 +298,9 @@ class Sonarr(object):
         }
         self.logger.debug(f"Triggering search for series ID: {series_id}")
         return self._api_post("command", params)
+
+    def scan_folder(self, path: str):
+        """Tell Sonarr to scan a folder for new episode files."""
+        params = {"name": "DownloadedEpisodesScan", "path": path}
+        self.logger.debug(f"Triggering Sonarr folder scan: {path}")
+        return self._api_post("command", params)

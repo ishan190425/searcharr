@@ -9,6 +9,7 @@ import json
 import os
 import yaml
 import sqlite3
+from pathlib import Path
 from threading import Lock
 from urllib.parse import parse_qsl
 import uuid
@@ -26,6 +27,7 @@ import radarr
 import sonarr
 import readarr
 import settings
+import ytdl_helper
 from transmissionstatus import StatusFinder
 
 __version__ = "3.2.2"
@@ -67,6 +69,7 @@ class Searcharr(object):
     def __init__(self, token):
         self.DEV_MODE = True if args.dev_mode else False
         self.token = token
+        self._ytfill_tasks = {}  # Track active ytfill downloads: {show_name: task}
         logger.info(f"Searcharr v{__version__} - Logging started!")
         self._lang = self._load_language()
         if self._lang.get("language_ietf") != "en-us":
@@ -752,6 +755,12 @@ class Searcharr(object):
             await query.answer()
             return
 
+        # Handle ytfillstop callbacks (different format)
+        if query.data.startswith("ytfillstop^^^"):
+            await query.answer()
+            await self._handle_ytfillstop_callback(query, context)
+            return
+
         convo = self._get_conversation(query.data.split("^^^")[0])
         # convo = self.conversations.get(query.data.split("^^^")[0])
         if not convo:
@@ -761,6 +770,7 @@ class Searcharr(object):
             return
 
         cid, i, op = query.data.split("^^^")
+        op_flags = {}
         if "^^" in op:
             op, op_flags = op.split("^^")
             op_flags = dict(parse_qsl(op_flags))
@@ -808,7 +818,7 @@ class Searcharr(object):
                         )
                     else:
                         raise
-                await query.bot.edit_message_caption(
+                await context.bot.edit_message_caption(
                     chat_id=query.message.chat_id,
                     message_id=query.message.message_id,
                     caption=reply_message,
@@ -858,7 +868,7 @@ class Searcharr(object):
                         )
                     else:
                         raise
-                await query.bot.edit_message_caption(
+                await context.bot.edit_message_caption(
                     chat_id=query.message.chat_id,
                     message_id=query.message.message_id,
                     caption=reply_message,
@@ -923,7 +933,7 @@ class Searcharr(object):
                             )
                         else:
                             raise
-                    await query.bot.edit_message_caption(
+                    await context.bot.edit_message_caption(
                         chat_id=query.message.chat_id,
                         message_id=query.message.message_id,
                         caption=reply_message,
@@ -1013,7 +1023,7 @@ class Searcharr(object):
                             )
                         else:
                             raise
-                    await query.bot.edit_message_caption(
+                    await context.bot.edit_message_caption(
                         chat_id=query.message.chat_id,
                         message_id=query.message.message_id,
                         caption=reply_message,
@@ -1074,7 +1084,7 @@ class Searcharr(object):
                             )
                         else:
                             raise
-                    await query.bot.edit_message_caption(
+                    await context.bot.edit_message_caption(
                         chat_id=query.message.chat_id,
                         message_id=query.message.message_id,
                         caption=reply_message,
@@ -1143,7 +1153,7 @@ class Searcharr(object):
                         )
                     else:
                         raise
-                await query.bot.edit_message_caption(
+                await context.bot.edit_message_caption(
                     chat_id=query.message.chat_id,
                     message_id=query.message.message_id,
                     caption=reply_message,
@@ -1206,7 +1216,7 @@ class Searcharr(object):
                             )
                         else:
                             raise
-                    await query.bot.edit_message_caption(
+                    await context.bot.edit_message_caption(
                         chat_id=query.message.chat_id,
                         message_id=query.message.message_id,
                         caption=reply_message,
@@ -1462,6 +1472,245 @@ class Searcharr(object):
             else:
                 await query.message.reply_text(self._xlate("search_not_supported"))
 
+        elif op == "ytdl_pick" and convo["type"] == "ytdl":
+            r = convo["results"][i]
+            title = r.get("title", "")
+            matches = ytdl_helper.find_media_matches(title, threshold=0.50, max_results=5)
+            matched_path = matches[0][1] if matches else None
+            if matched_path:
+                self._update_add_data(cid, "ytdl_path", str(matched_path))
+            # Store each match path individually (database only accepts strings)
+            for idx, (kind, path) in enumerate(matches):
+                self._update_add_data(cid, f"ytdl_match_{idx}", str(path))
+            text, markup = self._prepare_ytdl_dest(cid, i, title, matches)
+            await context.bot.edit_message_text(
+                chat_id=query.message.chat.id,
+                message_id=query.message.message_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode="Markdown",
+            )
+
+        elif op == "ytdl_tv_season" and convo["type"] == "ytfill":
+            show_name = convo["results"][0] if convo.get("results") else ""
+            season = int(op_flags.get("season", 1))
+            # Show folder match confirmation before downloading
+            show_clean = ytdl_helper.clean_title(show_name)
+            import re as _re_confirm
+            show_clean = _re_confirm.sub(
+                r"\s*\b[Ss]\d{1,2}[Ee]\d{1,2}\b.*$|\b[Ss]eason\s*\d+\b.*$|\b[Ee]p(isode)?\s*\d+\b.*$",
+                "", show_clean,
+            ).strip(" -") or show_clean
+            # Find best matches
+            matches = ytdl_helper.find_media_matches(show_clean, threshold=0.50, max_results=3)
+            tv_matches = [(k, p) for k, p in matches if k == "tv"]
+            
+            if tv_matches:
+                matched_folder = tv_matches[0][1].name
+                confirm_text = (
+                    f"📁 *Folder Match Found*\n\n"
+                    f"Show: `{show_clean}`\n"
+                    f"Will save to: `{matched_folder}`\n"
+                    f"Season: {season:02d}\n\n"
+                    f"Is this the correct folder?"
+                )
+            else:
+                matched_folder = show_clean
+                confirm_text = (
+                    f"📁 *No Existing Folder Found*\n\n"
+                    f"Show: `{show_clean}`\n"
+                    f"Will create: `{show_clean}`\n"
+                    f"Season: {season:02d}\n\n"
+                    f"Proceed with this folder name?"
+                )
+            
+            # Store season in conversation for confirm handler (use _update_add_data to persist)
+            logger.info(f"ytfill storing: season={season}, folder={matched_folder}")
+            self._update_add_data(cid, "ytfill_season", str(season))
+            self._update_add_data(cid, "ytfill_folder", matched_folder)
+            
+            confirm_keyboard = InlineKeyboardMarkup([
+                [
+                    InlineKeyboardButton("✅ Confirm", callback_data=f"{cid}^^^0^^^ytfill_confirm"),
+                    InlineKeyboardButton("❌ Cancel", callback_data=f"{cid}^^^0^^^ytfill_cancel"),
+                ]
+            ])
+            await context.bot.edit_message_text(
+                chat_id=query.message.chat.id,
+                message_id=query.message.message_id,
+                text=confirm_text,
+                reply_markup=confirm_keyboard,
+                parse_mode="Markdown",
+            )
+
+        elif op == "ytfill_confirm" and convo["type"] == "ytfill":
+            show_name = convo["results"][0] if convo.get("results") else ""
+            add_data = self._get_add_data(cid)
+            season = int(add_data.get("ytfill_season", "1"))
+            folder = add_data.get("ytfill_folder", "")
+            logger.info(f"ytfill_confirm: season={season}, folder={folder}")
+            self._delete_conversation(cid)
+            await context.bot.edit_message_text(
+                chat_id=query.message.chat.id,
+                message_id=query.message.message_id,
+                text=f"📺 Queuing *{ytdl_helper.clean_title(show_name)}* → `{folder}` from Season {season:02d}…\nI'll message you as each episode downloads.",
+                parse_mode="Markdown",
+            )
+            task = asyncio.create_task(self._ytfill_batch(show_name, season, query.message.chat.id, context))
+            self._ytfill_tasks[show_name] = task
+
+        elif op == "ytfill_cancel" and convo["type"] == "ytfill":
+            self._delete_conversation(cid)
+            await context.bot.edit_message_text(
+                chat_id=query.message.chat.id,
+                message_id=query.message.message_id,
+                text="❌ ytfill cancelled.",
+                parse_mode="Markdown",
+            )
+
+        elif op == "ytdl_tv_season" and convo["type"] == "ytdl":
+            r = convo["results"][i]
+            title = r.get("title", "")
+            text, markup = self._prepare_ytdl_season_keyboard(cid, i, title)
+            await context.bot.edit_message_text(
+                chat_id=query.message.chat.id,
+                message_id=query.message.message_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode="Markdown",
+            )
+
+        elif op == "ytdl_tv_episode" and convo["type"] == "ytdl":
+            r = convo["results"][i]
+            title = r.get("title", "")
+            add_data = self._get_add_data(cid)
+            season = int(add_data.get("season", op_flags.get("season", 1)))
+            offset = int(op_flags.get("ep_offset", add_data.get("ep_offset", 0)))
+            text, markup = self._prepare_ytdl_episode_keyboard(cid, i, title, season, offset)
+            await context.bot.edit_message_text(
+                chat_id=query.message.chat.id,
+                message_id=query.message.message_id,
+                text=text,
+                reply_markup=markup,
+                parse_mode="Markdown",
+            )
+
+        elif op == "ytdl_dl" and convo["type"] == "ytdl":
+            r = convo["results"][i]
+            title = r.get("title", "")
+            url = f"https://www.youtube.com/watch?v={r['id']}"
+            add_data = self._get_add_data(cid)
+            dest = op_flags.get("dest", add_data.get("dest", "movie"))
+
+            from pathlib import Path as _Path
+            season_str = add_data.get("season")
+            ep_str = add_data.get("ep")
+
+            if season_str and ep_str:
+                # TV episode flow: season/ep were set by the season/episode picker
+                season_int = int(season_str)
+                ep_int = int(ep_str)
+                if dest.startswith("match_"):
+                    match_idx = dest.split("_")[1]
+                    match_path = add_data.get(f"ytdl_match_{match_idx}")
+                    if match_path:
+                        show_dir = _Path(match_path)
+                    else:
+                        _clean = ytdl_helper.clean_title(title)
+                        _canonical = ytdl_helper.lookup_canonical_series_name(_clean, self.sonarr) if self.sonarr else None
+                        show_dir = ytdl_helper.TV_ROOT / (_canonical or _clean)
+                else:
+                    # Strip episode tokens so YouTube "Show S01E01 HD" → folder "Show"
+                    import re as _re2
+                    raw = ytdl_helper.clean_title(title)
+                    show_name = _re2.sub(
+                        r"\s*\b[Ss]\d{1,2}[Ee]\d{1,2}\b.*$"
+                        r"|\b[Ss]eason\s*\d+\b.*$"
+                        r"|\b[Ee]p(isode)?\s*\d+\b.*$",
+                        "",
+                        raw,
+                    ).strip(" -")
+                    canonical_show = ytdl_helper.lookup_canonical_series_name(show_name or raw, self.sonarr) if self.sonarr else None
+                    show_dir = ytdl_helper.TV_ROOT / (canonical_show or show_name or raw)
+                output_dir = show_dir / f"Season {season_int:02d}"
+                folder_name = f"{show_dir.name} - S{season_int:02d}E{ep_int:02d}"
+            elif dest.startswith("match_"):
+                # User picked one of the matched folders
+                match_idx = dest.split("_")[1]
+                match_path = add_data.get(f"ytdl_match_{match_idx}")
+                if match_path:
+                    output_dir = _Path(match_path)
+                else:
+                    _clean = ytdl_helper.clean_title(title)
+                    _canonical = ytdl_helper.lookup_canonical_movie_name(_clean, self.radarr) if self.radarr else None
+                    output_dir = ytdl_helper.MOVIE_ROOT / (_canonical or _clean)
+                folder_name = output_dir.name
+            elif dest == "auto" and add_data.get("ytdl_path"):
+                output_dir = _Path(add_data["ytdl_path"])
+                folder_name = output_dir.name
+            elif dest == "tv":
+                clean = ytdl_helper.clean_title(title)
+                canonical = ytdl_helper.lookup_canonical_series_name(clean, self.sonarr) if self.sonarr else None
+                folder_name = canonical or clean
+                output_dir = ytdl_helper.TV_ROOT / folder_name
+            else:
+                clean = ytdl_helper.clean_title(title)
+                canonical = ytdl_helper.lookup_canonical_movie_name(clean, self.radarr) if self.radarr else None
+                folder_name = canonical or clean
+                output_dir = ytdl_helper.MOVIE_ROOT / folder_name
+            self._delete_conversation(cid)
+
+            await context.bot.edit_message_text(
+                chat_id=query.message.chat.id,
+                message_id=query.message.message_id,
+                text=f"⬇️ Downloading *{ytdl_helper.clean_title(title)}*…\nThis may take a few minutes.",
+                parse_mode="Markdown",
+            )
+
+            chat_id = query.message.chat.id
+
+            is_tv_ep = bool(season_str and ep_str)
+            async def _do_download(url=url, output_dir=output_dir, folder_name=folder_name, title=title, chat_id=chat_id, dest=dest, is_tv_ep=is_tv_ep):
+                try:
+                    loop = asyncio.get_event_loop()
+                    dest_path = await loop.run_in_executor(
+                        None, ytdl_helper.download, url, False, output_dir, folder_name
+                    )
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"✅ *{ytdl_helper.clean_title(title)}* downloaded!\nSaved to: `{dest_path}`",
+                        parse_mode="Markdown",
+                    )
+                    # Add to Radarr/Sonarr so it gets proper metadata and is monitored
+                    try:
+                        clean = ytdl_helper.clean_title(title)
+                        import re as _re
+                        year_match = _re.search(r'\((\d{4})\)', output_dir.name)
+                        year = int(year_match.group(1)) if year_match else 0
+                        if not is_tv_ep and self.radarr:
+                            self.radarr.add_movie_by_title(
+                                clean, year, str(ytdl_helper.MOVIE_ROOT)
+                            )
+                    except Exception as add_err:
+                        logger.warning(f"Radarr add failed (non-fatal): {add_err}")
+
+                    # Trigger folder scan so Radarr/Sonarr links the file
+                    try:
+                        if is_tv_ep and self.sonarr:
+                            self.sonarr.scan_folder(str(output_dir))
+                        elif not is_tv_ep and self.radarr:
+                            self.radarr.scan_folder(str(output_dir))
+                    except Exception as scan_err:
+                        logger.warning(f"Folder scan trigger failed (non-fatal): {scan_err}")
+                except Exception as e:
+                    logger.error(f"ytdl download error: {e}")
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"❌ Download failed: {str(e)[:300]}",
+                    )
+
+            asyncio.create_task(_do_download())
+
         await query.answer()
 
     def _prepare_response(
@@ -1702,6 +1951,390 @@ class Searcharr(object):
         except Exception as e:
             logger.debug(f"Could not answer callback query in error handler: {e}")
 
+    def _prepare_ytdl_list(self, results, cid):
+        keyboard = []
+        for i, entry in enumerate(results):
+            d = entry.get("duration")
+            dur = f" ({int(d) // 60}:{int(d) % 60:02d})" if d else ""
+            label = entry.get("title", "Unknown")
+            if len(label) > 45:
+                label = label[:42] + "..."
+            keyboard.append([InlineKeyboardButton(
+                f"{i + 1}. {label}{dur}",
+                callback_data=f"{cid}^^^{i}^^^ytdl_pick",
+            )])
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data=f"{cid}^^^0^^^cancel")])
+        return "🎬 *YouTube Search Results* — pick a video:", InlineKeyboardMarkup(keyboard)
+
+    def _prepare_ytdl_dest(self, cid, i, title, matches):
+        clean = ytdl_helper.clean_title(title)
+        keyboard = []
+        # Show all matching folders (up to 5); TV matches go to season picker first
+        for idx, (kind, path) in enumerate(matches):
+            from pathlib import Path as _Path
+            path_obj = _Path(path) if isinstance(path, str) else path
+            icon = "📽" if kind == "movie" else "📺"
+            if kind == "tv":
+                op_str = f"ytdl_tv_season^^dest=match_{idx}"
+            else:
+                op_str = f"ytdl_dl^^dest=match_{idx}"
+            keyboard.append([InlineKeyboardButton(
+                f"{icon} {path_obj.name}",
+                callback_data=f"{cid}^^^{i}^^^{op_str}",
+            )])
+        keyboard.append([
+            InlineKeyboardButton("📽 New Movie Folder", callback_data=f"{cid}^^^{i}^^^ytdl_dl^^dest=movie"),
+            InlineKeyboardButton("📺 New TV Folder", callback_data=f"{cid}^^^{i}^^^ytdl_tv_season^^dest=tv"),
+        ])
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data=f"{cid}^^^{i}^^^cancel")])
+        text = f"📥 *{clean}*\n\nSave to:"
+        return text, InlineKeyboardMarkup(keyboard)
+
+    def _prepare_ytdl_season_keyboard(self, cid, i, title, ytfill=False):
+        clean = ytdl_helper.clean_title(title)
+        # ytfill: season selection starts the batch — route to ytdl_tv_season (ytfill handler)
+        # ytdl:   season selection shows episode picker — route to ytdl_tv_episode
+        season_op = "ytdl_tv_season" if ytfill else "ytdl_tv_episode"
+        keyboard = []
+        keyboard.append([InlineKeyboardButton(
+            "📺 No Season (Ep 1, Ep 2… Indian style)",
+            callback_data=f"{cid}^^^{i}^^^{season_op}^^season=0",
+        )])
+        row = []
+        for s in range(1, 31):
+            row.append(InlineKeyboardButton(
+                f"S{s:02d}", callback_data=f"{cid}^^^{i}^^^{season_op}^^season={s}"
+            ))
+            if len(row) == 5:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data=f"{cid}^^^{i}^^^cancel")])
+        return f"📺 *{clean}*\n\nSelect season:", InlineKeyboardMarkup(keyboard)
+
+    def _prepare_ytdl_episode_keyboard(self, cid, i, title, season, offset=0):
+        _MAX_EP = 150
+        clean = ytdl_helper.clean_title(title)
+        keyboard = []
+        row = []
+        end = min(offset + 26, _MAX_EP)
+        for e in range(offset + 1, end + 1):
+            row.append(InlineKeyboardButton(
+                f"E{e:02d}", callback_data=f"{cid}^^^{i}^^^ytdl_dl^^ep={e}"
+            ))
+            if len(row) == 4:
+                keyboard.append(row)
+                row = []
+        if row:
+            keyboard.append(row)
+        nav = []
+        if offset > 0:
+            nav.append(InlineKeyboardButton("◀ Prev", callback_data=f"{cid}^^^{i}^^^ytdl_tv_episode^^ep_offset={offset - 26}"))
+        if end < _MAX_EP:
+            nav.append(InlineKeyboardButton("▶ More", callback_data=f"{cid}^^^{i}^^^ytdl_tv_episode^^ep_offset={end}"))
+        if nav:
+            keyboard.append(nav)
+        keyboard.append([
+            InlineKeyboardButton("« Seasons", callback_data=f"{cid}^^^{i}^^^ytdl_tv_season"),
+            InlineKeyboardButton("❌ Cancel", callback_data=f"{cid}^^^{i}^^^cancel"),
+        ])
+        return f"📺 *{clean}* — Season {season:02d}\n\nSelect episode:", InlineKeyboardMarkup(keyboard)
+
+    async def cmd_youtube(self, update, context):
+        logger.debug(f"Received youtube cmd from [{update.message.from_user.username}]")
+        if not self._authenticated(update.message.from_user.id):
+            await update.message.reply_text(
+                self._xlate(
+                    "auth_required",
+                    commands=" OR ".join(
+                        [f"`/{c} <{self._xlate('password')}>`" for c in settings.searcharr_start_command_aliases]
+                    ),
+                )
+            )
+            return
+
+        query_text = self._strip_entities(update.message)
+        if not query_text:
+            aliases = getattr(settings, "ytdl_command_aliases", ["youtube"])
+            cmd = aliases[0]
+            await update.message.reply_text(
+                f"Usage: `/{cmd} <search query>`\nExample: `/{cmd} all the best 2009`",
+                parse_mode="Markdown",
+            )
+            return
+
+        msg = await update.message.reply_text(f"🔍 Searching YouTube for: _{query_text}_...", parse_mode="Markdown")
+        try:
+            n = getattr(settings, "ytdl_search_results", 8)
+            loop = asyncio.get_event_loop()
+            results = await loop.run_in_executor(None, ytdl_helper.search_youtube, query_text, n)
+        except Exception as e:
+            logger.error(f"YouTube search error: {e}")
+            await msg.edit_text("❌ YouTube search failed. Try again later.")
+            return
+
+        if not results:
+            await msg.edit_text("No results found.")
+            return
+
+        cid = self._generate_cid()
+        self._create_conversation(
+            id=cid,
+            username=str(update.message.from_user.username),
+            kind="ytdl",
+            results=results,
+        )
+        text, markup = self._prepare_ytdl_list(results, cid)
+        await msg.edit_text(text, reply_markup=markup, parse_mode="Markdown")
+
+    async def cmd_ytfill(self, update, context):
+        logger.debug(f"Received ytfill cmd from [{update.message.from_user.username}]")
+        if not self._authenticated(update.message.from_user.id):
+            await update.message.reply_text(
+                self._xlate(
+                    "auth_required",
+                    commands=" OR ".join(
+                        [f"`/{c} <{self._xlate('password')}>`" for c in settings.searcharr_start_command_aliases]
+                    ),
+                )
+            )
+            return
+
+        show_name = self._strip_entities(update.message)
+        if not show_name:
+            aliases = getattr(settings, "ytfill_command_aliases", ["ytfill"])
+            cmd = aliases[0]
+            await update.message.reply_text(
+                f"Usage: `/{cmd} <show name>`\nExample: `/{cmd} Breaking Bad`\n\n"
+                "The bot will auto-download all episodes from YouTube.",
+                parse_mode="Markdown",
+            )
+            return
+
+        cid = self._generate_cid()
+        self._create_conversation(
+            id=cid,
+            username=str(update.message.from_user.username),
+            kind="ytfill",
+            results=[show_name],
+        )
+        text, markup = self._prepare_ytdl_season_keyboard(cid, 0, show_name, ytfill=True)
+        await update.message.reply_text(
+            f"📺 *{ytdl_helper.clean_title(show_name)}*\n\nWhich season should I start from?",
+            reply_markup=markup,
+            parse_mode="Markdown",
+        )
+
+    async def cmd_ytfillstop(self, update, context):
+        """Stop an active ytfill download."""
+        logger.debug(f"Received ytfillstop cmd from [{update.message.from_user.username}]")
+        if not self._authenticated(update.message.from_user.id):
+            await update.message.reply_text(
+                self._xlate(
+                    "auth_required",
+                    commands=" OR ".join(
+                        [f"`/{c} <{self._xlate('password')}>`" for c in settings.searcharr_start_command_aliases]
+                    ),
+                )
+            )
+            return
+
+        if not self._ytfill_tasks:
+            await update.message.reply_text("No active ytfill downloads.")
+            return
+
+        # Show list of active downloads with stop buttons
+        keyboard = []
+        for show_name in self._ytfill_tasks:
+            keyboard.append([InlineKeyboardButton(
+                f"🛑 Stop: {show_name[:30]}",
+                callback_data=f"ytfillstop^^^{show_name[:50]}"
+            )])
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="ytfillstop^^^cancel")])
+
+        await update.message.reply_text(
+            f"📺 *Active ytfill downloads ({len(self._ytfill_tasks)}):*\n\nSelect one to stop:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode="Markdown",
+        )
+
+    async def _handle_ytfillstop_callback(self, query, context):
+        """Handle ytfillstop button presses."""
+        data = query.data.replace("ytfillstop^^^", "")
+        if data == "cancel":
+            await query.message.edit_text("Cancelled.")
+            return
+
+        show_name = data
+        task = self._ytfill_tasks.get(show_name)
+        if task:
+            task.cancel()
+            await query.message.edit_text(f"🛑 Stopping: *{show_name}*", parse_mode="Markdown")
+        else:
+            await query.message.edit_text(f"Download already finished or not found: {show_name}")
+
+    async def _ytfill_batch(self, show_name: str, start_season: int, chat_id: int, context):
+        """Background task: auto-download all episodes of a show from YouTube."""
+        try:
+            await self._ytfill_batch_inner(show_name, start_season, chat_id, context)
+        except asyncio.CancelledError:
+            logger.info(f"ytfill cancelled for {show_name}")
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=f"🛑 ytfill stopped: *{show_name}*", parse_mode="Markdown")
+            except Exception:
+                pass
+        except Exception as e:
+            logger.error(f"ytfill unhandled error for {show_name}: {e}", exc_info=True)
+            try:
+                await context.bot.send_message(chat_id=chat_id, text=f"❌ ytfill crashed: {str(e)[:200]}")
+            except Exception:
+                pass
+        finally:
+            # Remove from active tasks
+            self._ytfill_tasks.pop(show_name, None)
+
+    async def _ytfill_batch_inner(self, show_name: str, start_season: int, chat_id: int, context):
+        import re as _re_fill
+        show_clean = ytdl_helper.clean_title(show_name)
+        # Strip any residual S01E01 tokens from the show name
+        show_clean = _re_fill.sub(
+            r"\s*\b[Ss]\d{1,2}[Ee]\d{1,2}\b.*$|\b[Ss]eason\s*\d+\b.*$|\b[Ee]p(isode)?\s*\d+\b.*$",
+            "", show_clean,
+        ).strip(" -") or show_clean
+        # Use existing TV folder if one matches closely, avoids duplicate folders
+        _, matched_path = ytdl_helper.find_media_match(show_clean, threshold=0.70)
+        if matched_path and matched_path.parent == ytdl_helper.TV_ROOT:
+            show_dir = matched_path
+            # Use the actual folder name for consistency (avoids case sensitivity issues)
+            show_clean = matched_path.name
+        else:
+            show_dir = ytdl_helper.TV_ROOT / show_clean
+
+        await context.bot.send_message(
+            chat_id=chat_id,
+            text=f"📺 Auto-downloading *{show_clean}* starting from Season {start_season:02d}…",
+            parse_mode="Markdown",
+        )
+
+        downloaded, failed = 0, []
+        loop = asyncio.get_running_loop()
+
+        def _existing_eps(directory: Path) -> set:
+            """Return set of episode numbers that exist (handles mismatched show names)."""
+            import re as _re_eps
+            if not directory.exists():
+                return set()
+            eps = set()
+            for f in directory.iterdir():
+                # Match "Ep 001" or "Ep 1" patterns
+                m = _re_eps.search(r"Ep\s*(\d+)", f.stem, _re_eps.IGNORECASE)
+                if m:
+                    eps.add(int(m.group(1)))
+            return eps
+
+        if start_season == 0:
+            # Indian / no-season mode: continuous Ep 1, Ep 2, ...
+            consecutive_misses = 0
+            existing_eps = await loop.run_in_executor(None, _existing_eps, show_dir)
+            for ep in range(1, 2000):
+                folder_name = f"{show_clean} - Ep {ep:03d}"
+                # Check if episode number exists (handles mismatched show name prefixes)
+                if ep in existing_eps:
+                    consecutive_misses = 0  # existing ep resets miss counter
+                    continue
+                result, score = await loop.run_in_executor(
+                    None, ytdl_helper.search_best_episode, show_clean, 0, ep
+                )
+                if result is None:
+                    if score != -1.0:  # -1.0 = network error, don't count as miss
+                        consecutive_misses += 1
+                        if consecutive_misses >= 3:
+                            break
+                    continue
+                consecutive_misses = 0
+                url = f"https://www.youtube.com/watch?v={result['id']}"
+                try:
+                    await loop.run_in_executor(
+                        None, ytdl_helper.download, url, False, show_dir, folder_name
+                    )
+                    downloaded += 1
+                    existing_eps.add(ep)
+                    await context.bot.send_message(
+                        chat_id=chat_id,
+                        text=f"✅ *{show_clean}* Ep {ep:03d} downloaded",
+                        parse_mode="Markdown",
+                    )
+                except Exception as e:
+                    label = f"Ep {ep:03d}"
+                    failed.append(label)
+                    logger.error(f"ytfill download error {show_clean} {label}: {e}")
+        else:
+            # Western season/episode mode
+            empty_seasons = 0
+            for season in range(start_season, 100):
+                season_dir = show_dir / f"Season {season:02d}"
+                eps_this_season = 0
+                consecutive_misses = 0
+
+                existing_season_eps = await loop.run_in_executor(None, _existing_eps, season_dir)
+                for ep in range(1, 300):
+                    folder_name = f"{show_clean} - S{season:02d}E{ep:02d}"
+                    # Check if episode number exists (handles mismatched show name prefixes)
+                    if ep in existing_season_eps:
+                        consecutive_misses = 0
+                        eps_this_season += 1
+                        continue
+                    result, score = await loop.run_in_executor(
+                        None, ytdl_helper.search_best_episode, show_clean, season, ep
+                    )
+                    if result is None:
+                        if score != -1.0:
+                            consecutive_misses += 1
+                            if consecutive_misses >= 3:
+                                break
+                        continue
+                    consecutive_misses = 0
+
+                    url = f"https://www.youtube.com/watch?v={result['id']}"
+                    try:
+                        await loop.run_in_executor(
+                            None, ytdl_helper.download, url, False, season_dir, folder_name
+                        )
+                        downloaded += 1
+                        eps_this_season += 1
+                        existing_season_eps.add(ep)
+                        await context.bot.send_message(
+                            chat_id=chat_id,
+                            text=f"✅ *{show_clean}* S{season:02d}E{ep:02d} downloaded",
+                            parse_mode="Markdown",
+                        )
+                    except Exception as e:
+                        label = f"S{season:02d}E{ep:02d}"
+                        failed.append(label)
+                        logger.error(f"ytfill download error {show_clean} {label}: {e}")
+
+                if eps_this_season == 0:
+                    empty_seasons += 1
+                    if empty_seasons >= 2:
+                        break
+                else:
+                    empty_seasons = 0
+
+        # Trigger Sonarr scan on the whole show folder
+        if self.sonarr:
+            try:
+                self.sonarr.scan_folder(str(show_dir))
+            except Exception as e:
+                logger.warning(f"ytfill Sonarr scan failed (non-fatal): {e}")
+
+        summary = f"📺 *{show_clean}* — done!\n✅ {downloaded} episode(s) downloaded"
+        if failed:
+            summary += f"\n⚠️ {len(failed)} failed: {', '.join(failed[:15])}"
+        if downloaded == 0:
+            summary += "\n\nNo episodes found on YouTube. Try a different show name spelling."
+        await context.bot.send_message(chat_id=chat_id, text=summary, parse_mode="Markdown")
+
     async def cmd_help(self, update, context):
         logger.debug(f"Received help cmd from [{update.message.from_user.username}]")
         auth_level = self._authenticated(update.message.from_user.id)
@@ -1770,6 +2403,11 @@ class Searcharr(object):
             myrequests_aliases = getattr(settings, "myrequests_command_aliases", ["myrequests"])
             myrequests_cmds = " OR ".join([f"`/{c}`" for c in myrequests_aliases])
             resp += f"• Use {myrequests_cmds} to view your recent requests\n"
+
+            # YouTube download
+            ytdl_aliases = getattr(settings, "ytdl_command_aliases", ["youtube"])
+            ytdl_cmds = " OR ".join([f"`/{c} Title`" for c in ytdl_aliases])
+            resp += f"\n*📺 YouTube Download:*\n• Use {ytdl_cmds} to search & download a video to your media library\n"
         else:
             resp = self._xlate("no_features")
 
@@ -2024,6 +2662,22 @@ class Searcharr(object):
             logger.debug(f"Registering [/{c}] as a users command")
             application.add_handler(CommandHandler(c, self.cmd_users))
         
+        # Register /youtube command
+        ytdl_aliases = getattr(settings, "ytdl_command_aliases", ["youtube"])
+        for c in ytdl_aliases:
+            logger.debug(f"Registering [/{c}] as a youtube download command")
+            application.add_handler(CommandHandler(c, self.cmd_youtube))
+
+        # Register /ytfill command
+        ytfill_aliases = getattr(settings, "ytfill_command_aliases", ["ytfill"])
+        for c in ytfill_aliases:
+            logger.debug(f"Registering [/{c}] as a ytfill command")
+            application.add_handler(CommandHandler(c, self.cmd_ytfill))
+
+        # Register /ytfillstop command
+        application.add_handler(CommandHandler("ytfillstop", self.cmd_ytfillstop))
+        logger.debug("Registered [/ytfillstop] command")
+
         # Register /myrequests command
         myrequests_aliases = getattr(settings, "myrequests_command_aliases", ["myrequests", "requests", "history"])
         for c in myrequests_aliases:
@@ -2173,7 +2827,7 @@ class Searcharr(object):
     def _update_add_data(self, cid, key, value):
         con, cur = self._get_con_cur()
         q = "INSERT OR REPLACE INTO add_data (cid, key, value) VALUES (?, ?, ?)"
-        qa = (cid, key, value)
+        qa = (cid, key, str(value))
         logger.debug(f"Executing query: [{q}] with args: [{qa}]")
         try:
             with DBLOCK:

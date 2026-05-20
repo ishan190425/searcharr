@@ -252,3 +252,64 @@ class Radarr(object):
         }
         self.logger.debug(f"Triggering search for movie ID: {movie_id}")
         return self._api_post("command", params)
+
+    def add_movie_by_title(self, title: str, year: int, root_folder: str, quality_profile_id=None) -> bool:
+        """Look up a movie on TMDB via Radarr and add it to the library."""
+        results = self.lookup_movie(title)
+        if not results:
+            self.logger.warning(f"No TMDB results found for '{title}'")
+            return False
+
+        # Find best match by title + year
+        match = next((r for r in results if r.get("year") == year), results[0])
+        if not match.get("tmdbId"):
+            self.logger.warning(f"No TMDB ID for '{title}'")
+            return False
+
+        # Use provided quality profile or fall back to first configured one
+        if quality_profile_id is None:
+            quality_profile_id = self._quality_profiles[0]["id"] if self._quality_profiles else 1
+
+        additional_data = {"p": root_folder, "q": quality_profile_id}
+        try:
+            result = self.add_movie(movie_info=match, search=False, monitored=True, additional_data=additional_data)
+            if result:
+                self.logger.info(f"Added '{title} ({year})' to Radarr (id={result.get('id')})")
+                return True
+        except Exception as e:
+            # Movie may already exist in Radarr — that's fine
+            if "already been added" in str(e).lower() or "409" in str(e):
+                self.logger.info(f"'{title}' already exists in Radarr")
+                return True
+            self.logger.error(f"Failed to add '{title}' to Radarr: {e}")
+        return False
+
+    def scan_folder(self, path: str):
+        """Tell Radarr to scan a folder for new movie files."""
+        params = {"name": "DownloadedMoviesScan", "path": path}
+        self.logger.debug(f"Triggering Radarr folder scan: {path}")
+        return self._api_post("command", params)
+
+    def get_missing_movies(self, page_size: int = 250) -> list:
+        """Return all monitored movies that have no file (wanted/missing)."""
+        all_records = []
+        page = 1
+        while True:
+            r = self._api_get("wanted/missing", {"page": page, "pageSize": page_size, "sortKey": "title", "sortDirection": "ascending"})
+            if not r:
+                break
+            records = r.get("records", [])
+            all_records.extend(records)
+            if len(all_records) >= r.get("totalRecords", 0):
+                break
+            page += 1
+        return [
+            {
+                "id": m.get("id"),
+                "title": m.get("title"),
+                "year": m.get("year"),
+                "path": m.get("path"),
+                "originalLanguage": m.get("originalLanguage", {}).get("name", ""),
+            }
+            for m in all_records
+        ]
