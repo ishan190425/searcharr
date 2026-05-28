@@ -93,3 +93,17 @@ docker_container_name = "TransmissionVPN"
 docker_container_restart_command = "cd ~/Docker/protonvpn && docker compose up -d"
 docker_status_check_interval = 300  # Check every 5 minutes
 docker_restart_command_aliases = ["restart_vpn"]
+
+# Plex
+plex_url = os.getenv("PLEX_URL", "http://localhost:32400")
+plex_token = os.getenv("PLEX_TOKEN", "")
+plex_enabled = bool(plex_token)
+nowplaying_command_aliases = ["nowplaying", "playing", "np"]
+
+# Plex Webhook (requires Plex Pass)
+# Register http://<server-ip>:<plex_webhook_port>/plex in Plex → Settings → Webhooks
+plex_webhook_enabled = True
+plex_webhook_port = 9081
+# Events that trigger a Telegram notification. Options:
+#   media.play, media.resume, media.pause, media.stop, media.scrobble, library.new
+plex_webhook_events = {"media.play", "media.scrobble"}

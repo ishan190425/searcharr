@@ -28,6 +28,8 @@ import sonarr
 import readarr
 import settings
 import ytdl_helper
+import plex_helper
+import plex_webhook
 from transmissionstatus import StatusFinder
 
 __version__ = "3.2.2"
@@ -2582,6 +2584,32 @@ class Searcharr(object):
         logger.debug(f"Stripped entities from message [{message.text}]: [{text}]")
         return text
 
+    async def cmd_nowplaying(self, update, context):
+        logger.debug(f"Received nowplaying cmd from [{update.message.from_user.username}]")
+        if not self._authenticated(update.message.from_user.id):
+            await update.message.reply_text(
+                self._xlate(
+                    "auth_required",
+                    commands=" OR ".join(
+                        [f"`/{c} <{self._xlate('password')}>`" for c in settings.searcharr_start_command_aliases]
+                    ),
+                )
+            )
+            return
+        if not settings.plex_enabled:
+            await update.message.reply_text("Plex is not configured on this server.")
+            return
+        try:
+            root = plex_helper.get_sessions(settings.plex_url, settings.plex_token)
+        except plex_helper.PlexUnreachable as e:
+            await update.message.reply_text(f"Could not reach Plex — is it running?\n<code>{e}</code>", parse_mode="HTML")
+            return
+        text = plex_helper.format_nowplaying(root)
+        if text is None:
+            await update.message.reply_text("Nothing is playing right now.")
+        else:
+            await update.message.reply_text(text, parse_mode="HTML")
+
     async def run(self):
         self._init_db()
         application = Application.builder().token(self.token).build()
@@ -2684,6 +2712,12 @@ class Searcharr(object):
             logger.debug(f"Registering [/{c}] as a myrequests command")
             application.add_handler(CommandHandler(c, self.cmd_myrequests))
         
+        # Register /nowplaying command
+        nowplaying_aliases = getattr(settings, "nowplaying_command_aliases", ["nowplaying", "np"])
+        for c in nowplaying_aliases:
+            logger.debug(f"Registering [/{c}] as a nowplaying command")
+            application.add_handler(CommandHandler(c, self.cmd_nowplaying))
+
         application.add_handler(CallbackQueryHandler(self.callback))
         if not self.DEV_MODE:
             application.add_error_handler(self.handle_error)
@@ -2696,7 +2730,20 @@ class Searcharr(object):
         await application.initialize()
         await application.start()
         await application.updater.start_polling()
-        
+
+        # Start Plex webhook server if enabled
+        webhook_runner = None
+        if getattr(settings, "plex_webhook_enabled", False):
+            try:
+                webhook_runner = await plex_webhook.start_webhook_server(
+                    bot=application.bot,
+                    admin_ids=settings.admin_user_ids,
+                    port=getattr(settings, "plex_webhook_port", 32401),
+                    events=getattr(settings, "plex_webhook_events", None),
+                )
+            except Exception as e:
+                logger.error(f"Failed to start Plex webhook server: {e}")
+
         # Check container status periodically
         if settings.docker_container_management_enabled:
             logger.info("Docker container management is enabled. Will check container status periodically.")
@@ -2704,7 +2751,7 @@ class Searcharr(object):
                 # Initial status check
                 is_running = statusFile.check_container_status()
                 logger.info(f"Initial container status check: {'running' if is_running else 'stopped'}")
-                
+
                 # Periodically check status while bot is running
                 while True:
                     try:
@@ -2718,6 +2765,8 @@ class Searcharr(object):
             except KeyboardInterrupt:
                 logger.info("Received keyboard interrupt. Stopping bot...")
             finally:
+                if webhook_runner:
+                    await webhook_runner.cleanup()
                 await application.stop()
         else:
             # If Docker container management is disabled, just idle
